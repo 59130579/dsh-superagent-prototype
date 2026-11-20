@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage a local dsh-superagent service (one DSH profile, default `superagent`) without affecting other tmux sessions.
+"""Manage a local dsh-superagent service (one DSH profile, default `superagent`) without holding the caller's terminal.
 
 `status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
 reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
@@ -25,6 +25,20 @@ ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.artifacts'
 CONTROL = ARTIFACTS / 'control'
 KEEP_LOGS = 20
+
+
+def launcher():
+    """Return the DSH executable or a checked, profile-specific launcher wrapper."""
+    configured = os.environ.get('DSH_SUPERAGENT_LAUNCHER', '').strip()
+    if not configured:
+        bundled = ROOT / 'dsh-model-launcher'
+        if bundled.is_file() and os.access(bundled, os.X_OK):
+            return str(bundled)
+        return shutil.which('dsh')
+    path = Path(configured).expanduser()
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError('DSH_SUPERAGENT_LAUNCHER must name an absolute executable file.')
+    return str(path)
 
 
 def control(profile):
@@ -158,28 +172,43 @@ def prune_logs(profile):
 
 def start(args):
     session = 'dsh-' + args.profile
+    mode = os.environ.get('DSH_SUPERAGENT_LAUNCH_MODE', 'tmux').strip().lower()
+    if mode not in ('tmux', 'nohup'):
+        raise RuntimeError('DSH_SUPERAGENT_LAUNCH_MODE must be tmux or nohup.')
     pids = processes(args.profile)
     if len(pids) > 1:
         raise RuntimeError('Multiple dsh-superagent processes found; refusing to start another.')
     if not pids:
-        dsh = shutil.which('dsh')
-        if not dsh or not shutil.which('tmux'):
-            raise RuntimeError('Both dsh and tmux must be on PATH.')
-        exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
-                                capture_output=True).returncode == 0
+        dsh = launcher()
+        if not dsh:
+            raise RuntimeError('dsh must be on PATH.')
+        nohup = shutil.which('nohup') if mode == 'nohup' else None
+        if mode == 'tmux' and not shutil.which('tmux'):
+            raise RuntimeError('tmux must be on PATH for DSH_SUPERAGENT_LAUNCH_MODE=tmux.')
+        if mode == 'nohup' and not nohup:
+            raise RuntimeError('nohup must be on PATH for DSH_SUPERAGENT_LAUNCH_MODE=nohup.')
+        exists = mode == 'tmux' and subprocess.run(['tmux', 'has-session', '-t', '=' + session],
+                                                     capture_output=True).returncode == 0
         if state(args.url) is not None:
             raise RuntimeError('An existing orchestrator answers at this URL; refusing duplicate startup.')
         stamp = time.strftime('%Y%m%d-%H%M%S')
         log = ARTIFACTS / f'dsh-superagent-{args.profile}-{stamp}-{os.getpid()}.log'
         log.touch()
         prune_logs(args.profile)
-        # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
-        command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
-                   + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
-        # Reuse an existing tmux session without disturbing other windows.
-        target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
-        pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
-                              check=True, capture_output=True, text=True).stdout.strip()
+        if mode == 'tmux':
+            # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
+            command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
+                       + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
+            # Reuse an existing tmux session without disturbing other windows.
+            target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
+            pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+        else:
+            # Directly detach the service. nohup preserves it after this control command exits; start_new_session gives it no terminal.
+            with log.open('ab') as output:
+                pane = str(subprocess.Popen([nohup, dsh, '--profile', args.profile, '--no-open'], cwd=ROOT,
+                                             stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                             start_new_session=True).pid)
         if pane.isdigit():
             (control(args.profile) / 'service.pid').write_text(pane + '\n')
         print('Log: ' + str(log), flush=True)

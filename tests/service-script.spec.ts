@@ -33,6 +33,7 @@ beforeEach(() => {
 want=; while [ $# -gt 0 ]; do [ "$1" = -p ] && want=$2; shift; done
 while IFS= read -r line; do
   case "$line" in after:*) dep=\${line#after:}; dep=\${dep%% *}; kill -0 "$dep" 2>/dev/null && continue; line=\${line#after:$dep };; esac
+  case "$line" in @launched:*) [ -f '${root}/nohup.pid' ] || continue; line="\$(cat '${root}/nohup.pid') \${line#@launched:}";; esac
   pid=\${line%% *}; kill -0 "$pid" 2>/dev/null || continue
   if [ -z "$want" ] || [ "$pid" = "$want" ]; then printf '%s\\n' "$line"; fi
 done < "$list"`)
@@ -44,15 +45,21 @@ done < "$list"`)
 afterEach(() => {
   server?.close(); server = undefined
   for (const child of sleepers) child.kill()
+  try {
+    const pid = Number(readFileSync(join(root, 'nohup.pid'), 'utf8'))
+    if (Number.isInteger(pid) && pid > 0) process.kill(pid, 'SIGTERM')
+  } catch {}
   sleepers = []
   rmSync(root, { recursive: true, force: true })
 })
-function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function runWith(environment: NodeJS.ProcessEnv, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
+    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '',
+      DSH_SUPERAGENT_LAUNCHER: '', ...environment },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
+function run(...args: string[]) { return runWith({}, ...args) }
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
 async function answering(state: unknown = READY, always = false): Promise<string> {
@@ -103,6 +110,48 @@ it('records the service PID at start, and still refuses a second instance the sc
   const again = await run('start', '--url', url, '--timeout', '10')
   expect(again).toMatchObject({ code: 1, stderr: expect.stringContaining('Multiple dsh-superagent processes') })
   expect(await status('superagent')).toMatchObject({ pids: [pid, second] })
+}, 20_000)
+it('starts through an absolute configured launcher while retaining the profile arguments', async () => {
+  const url = await answering()
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  const launcher = join(root, 'bin', 'model-enabled-dsh')
+  program('model-enabled-dsh', 'exit 0')
+  expect(await runWith({ DSH_SUPERAGENT_LAUNCHER: launcher }, 'start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
+  const command = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').find(call => call.startsWith('new-session'))!
+  expect(command).toContain('exec')
+  expect(command).toContain('model-enabled-dsh')
+  expect(command).toContain('--profile superagent --no-open')
+  expect(command).not.toContain(`${join(root, 'bin', 'dsh')} --profile superagent --no-open`)
+}, 20_000)
+it('uses an executable deployment launcher by default while retaining the profile arguments', async () => {
+  const url = await answering()
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid))
+  const launcher = join(root, 'dsh-model-launcher')
+  writeFileSync(launcher, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  expect(await run('start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
+  const command = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').find(call => call.startsWith('new-session'))!
+  expect(command).toContain('dsh-model-launcher')
+  expect(command).toContain('--profile superagent --no-open')
+  expect(command).not.toContain(`${join(root, 'bin', 'dsh')} --profile superagent --no-open`)
+}, 20_000)
+it('starts directly through nohup without creating a tmux session when configured', async () => {
+  const url = await answering()
+  started('@launched: node node /opt/my tools/dsh --profile superagent --no-open')
+  program('nohup', `printf '%s\\n' "$$" > '${root}/nohup.pid'
+for a in "$@"; do printf '%s\\n' "$a"; done >> '${root}/nohup.log'
+touch '${root}/launched'
+exec sleep 60`)
+  expect(await runWith({ DSH_SUPERAGENT_LAUNCH_MODE: 'nohup' }, 'start', '--url', url, '--timeout', '10')).toMatchObject({ code: 0 })
+  const pid = Number(readFileSync(join(root, 'nohup.pid'), 'utf8'))
+  expect(readFileSync(join(control('superagent'), 'service.pid'), 'utf8')).toBe(`${pid}\n`)
+  expect(readFileSync(join(root, 'nohup.log'), 'utf8').split('\n')).toEqual(expect.arrayContaining([
+    join(root, 'bin', 'dsh'), '--profile', 'superagent', '--no-open',
+  ]))
+  expect(existsSync(join(root, 'tmux.log'))).toBe(false)
 }, 20_000)
 it('waits only for the process it stopped', async () => {
   const pid = sleeper()
