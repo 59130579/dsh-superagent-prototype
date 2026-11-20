@@ -122,6 +122,14 @@ describe('feishu source', () => {
     expect(feishuTrigger({ message_id: 'om_3', chat_id: 'oc_1', chat_type: 'p2p', sender_id: 'ou_bot', sender_type: 'bot', content: 'me', create_time: '1' }, 'ou_bot', 'cli_bot')).toBeUndefined()
     expect(feishuTrigger(historyEvent({ message_id: 'om_4', chat_id: 'oc_1', create_time: '2', sender: { id: 'ou_x', sender_type: 'app' }, body: { content: '{"text":"from app"}' } }, 'oc_1', false), 'ou_bot', 'cli_bot')).toMatchObject({ human: false, text: 'from app', threads: [{ id: 'oc_1:om_4' }] })
   })
+  it('keeps a single entry thread for every direct message in one chat', () => {
+    const first = feishuTrigger({ message_id: 'om_first', chat_id: 'oc_dm', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user',
+      content: 'first task', create_time: '1' }, 'ou_bot', 'cli_bot')!
+    const second = feishuTrigger({ message_id: 'om_second', chat_id: 'oc_dm', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user',
+      content: 'next task', create_time: '2' }, 'ou_bot', 'cli_bot')!
+    expect(first.threads).toEqual([{ source: 'feishu', id: 'oc_dm' }])
+    expect(second.threads).toEqual(first.threads)
+  })
   it('polls subscribed threads and stores unseen replies as triggers on that thread', async () => {
     const h = host()
     const source = feishuTrigger({ message_id: 'om_root', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: '@bot fix', create_time: '1', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!
@@ -156,7 +164,7 @@ describe('feishu source', () => {
       content: 'fix it', create_time: '1757376000000' }, 'ou_bot', 'cli_bot')!
     h.store.triggers.save(source)
     subscribed(h, source.threads[0]!)
-    h.store.threads.save({ ...h.store.threads.get('feishu:oc_dm:om_root')!, createdAt: '2025-09-01T00:00:00Z',
+    h.store.threads.save({ ...h.store.threads.get('feishu:oc_dm')!, createdAt: '2025-09-01T00:00:00Z',
       lastAt: new Date().toISOString() })
     const page = (message_id: string, sender: Record<string, string>, extra: Record<string, unknown> = {}) => ({ message_id,
       chat_id: 'oc_dm', msg_type: 'text', content: 'and the header', sender,
@@ -173,7 +181,7 @@ describe('feishu source', () => {
       content: 'and the header',
       create_time: String(Date.parse('2026-09-11 12:00')), root_id: 'om_root', thread_id: 'omt_dm' }, 'ou_bot', 'cli_bot')
     expect(h.receive.mock.calls.map(([trigger]) => trigger)).toEqual([live])
-    expect(live).toMatchObject({ addressed: 'direct', threads: [{ source: 'feishu', id: 'oc_dm:om_root' }] })
+    expect(live).toMatchObject({ addressed: 'direct', threads: [{ source: 'feishu', id: 'oc_dm' }] })
     h.store.close()
   })
   it('reads message times given as epoch milliseconds or as local times, and refuses others', () => {
@@ -1043,7 +1051,7 @@ describe('feishu event consumer', () => {
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
    * and `flaky` exits after its first ready. It records each run and the PID of the latest.
    */
-  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
+  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late' | 'structuredError'): string {
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
@@ -1055,6 +1063,7 @@ describe('feishu event consumer', () => {
     flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
     events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
     late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
+    structuredError) printf '%s\\n' '{' '  "error": {' '    "message": "another event bus is already connected"' '  }' '}' >&2; exit 2 ;;
   esac
   `, { mode: 0o755 })
     return path
@@ -1159,6 +1168,13 @@ describe('feishu event consumer', () => {
     const { ctx, health, store } = consumerSource(cli('warn'))
     running = runFeishu(ctx, controller.signal)
     await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error', detail: 'WARN the connection was reset' }), until)
+    controller.abort(); await running; store.close()
+  }, 20_000)
+  it('retains a structured consumer failure instead of only its final line', async () => {
+    const { ctx, health, store } = consumerSource(cli('structuredError'))
+    running = runFeishu(ctx, controller.signal)
+    await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'error',
+      detail: expect.stringContaining('another event bus is already connected') }), until)
     controller.abort(); await running; store.close()
   }, 20_000)
   it('stops the consumer within five seconds once the Source is off', async () => {

@@ -13,7 +13,9 @@ const EventSchema = z.object({ message_id: z.string(), chat_id: z.string(), chat
   mentions: z.array(z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() })).default([]),
   root_id: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(), message_app_link: z.url().optional() })
 export type FeishuEvent = z.infer<typeof EventSchema>
-export const feishuThreadId = (chatId: string, rootId: string | undefined, messageId: string): string => `${chatId}:${rootId ?? messageId}`
+/** Keeps one persistent entry conversation for each direct chat; groups remain partitioned by their root message. */
+export const feishuThreadId = (chatId: string, direct: boolean, rootId: string | undefined, messageId: string): string =>
+  direct ? chatId : `${chatId}:${rootId ?? messageId}`
 /** Deterministic trigger ID for a Feishu message; every read path for this message produces the same ID. */
 export const feishuTriggerId = (messageId: string): string => key('feishu', messageId)
 export const withMentionNames = (text: string, mentions: { key?: string | undefined; name?: string | undefined }[]): string =>
@@ -33,7 +35,7 @@ export function feishuTrigger(input: unknown, botId: string, botAppId: string): 
   if (event.sender_id === botId || event.sender_id === botAppId) return
   const direct = event.chat_type === 'p2p'
   const mentioned = event.mentions.some(mention => mention.id === botId || mention.id === botAppId)
-  const thread = feishuThreadId(event.chat_id, event.root_id, event.message_id)
+  const thread = feishuThreadId(event.chat_id, direct, event.root_id, event.message_id)
   return { id: feishuTriggerId(event.message_id), source: SOURCE, threads: [{ source: SOURCE, id: thread }],
     actor: { source: SOURCE, id: event.sender_id }, human: event.sender_type === 'user',
     ...(direct ? { addressed: 'direct' as const } : mentioned ? { addressed: 'mention' as const } : {}),

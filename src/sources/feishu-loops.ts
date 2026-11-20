@@ -77,11 +77,13 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   signal.addEventListener('abort', stop, { once: true })
   const timeout = setTimeout(() => { diagnostic = 'Feishu event consumer did not become ready within 45 seconds'; stop() }, 45_000)
   stderr.on('line', (line: string) => {
-    diagnostic = line.slice(0, 4000)
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
       ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
-    } else if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
+      return
+    }
+    diagnostic = `${diagnostic}${diagnostic ? '\n' : ''}${line}`.slice(-4000)
+    if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
   })
   stdout.on('line', (line: string) => {
     chain = chain.then(async () => {
@@ -239,7 +241,8 @@ async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSign
   }
   const direct = ctx.state.get(KV.feishu.chats)?.[ref.chatId] === true
   const since = Date.parse(thread.createdAt)
-  const root = thread.ref.id.slice(thread.ref.id.indexOf(':') + 1)
+  // Direct chats share one entry Thread, so their ID carries no source-message suffix; preserve the retained source message as the topic root.
+  const root = direct ? ref.messageId : thread.ref.id.slice(thread.ref.id.indexOf(':') + 1)
   let resource: string | null = `feishu/${ref.triggerId}/thread`
   while (resource) {
     if (signal?.aborted) return
