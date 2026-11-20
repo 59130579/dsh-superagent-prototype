@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, resolveLocalDeployment, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -57,6 +57,9 @@ describe('configuration schema', () => {
 })
 
 describe('setup', () => {
+  it('creates a local deployment without any GitHub repository or account', () => {
+    expect(resolveLocalDeployment(machine())).toMatchObject({ kind: 'local', repository: '', github: { cli: '', login: '', noreply: '' } })
+  })
   it('reads the repository from the GitHub Source and the accounts from their CLIs, skipping the worker shims', async () => {
     const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, path)
     expect(deployment).toMatchObject({ repository: 'acme/widgets', github: { cli: join(dir, 'bin', 'gh'), login: 'Agent-Bot', noreply: '7+Agent-Bot@users.noreply.github.com' } })

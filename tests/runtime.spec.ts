@@ -93,13 +93,14 @@ const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
   const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
   return { done: Promise.resolve({ exitCode: answer instanceof Error ? 1 : 0, signal: null }), collected: { stdout: reader(answer instanceof Error ? '' : answer), stderr: reader(answer instanceof Error ? answer.message : '') } }
 }) }
-/** Source account overrides for test setup; `feishu: null` disables the Feishu source. */
-interface Accounts { github?: Record<string, unknown>; feishu?: Record<string, unknown> | null }
+/** Source account overrides for test setup; `null` disables the corresponding source. */
+interface Accounts { github?: Record<string, unknown> | null; feishu?: Record<string, unknown> | null }
 function seed(store: Store, accounts: Accounts = {}): void {
   const settings = store.settings()
-  const { feishu: _feishu, ...others } = settings.sources
+  const { feishu: _feishu, github: _github, ...others } = settings.sources
+  const github = accounts.github === null ? undefined : { repository: 'acme/widgets', cli: AGENT(), ...accounts.github }
   const feishu = accounts.feishu === null ? undefined : { ...settings.sources.feishu?.config, cli: BOT(), ...accounts.feishu }
-  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT(), ...accounts.github } }, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
+  store.saveSettings(SettingsSchema.parse({ ...settings, sources: { ...others, ...github ? { github: { enabled: true, config: github } } : {}, ...feishu ? { feishu: { enabled: true, config: feishu } } : {} } }))
 }
 let restarts: ReturnType<typeof vi.fn<() => void>>
 async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}): Promise<Runtime> {
@@ -838,6 +839,15 @@ it('waits for setup without the agent\'s GitHub CLI: the panel works, and nothin
   await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(1))
   next.checkSetup()
   await vi.waitFor(() => expect(restarts).toHaveBeenCalledTimes(2))
+})
+
+it('runs from the Feishu bot without a GitHub repository or account', async () => {
+  const next = await restart({}, { github: null })
+  await next.ready
+  expect(next.configured()).toBe(true)
+  expect(next.setupProblem).toBeUndefined()
+  expect(next.deployment).toMatchObject({ kind: 'local', repository: '', github: { cli: '' }, feishu: { appId: 'cli_bot', botId: 'ou_bot' } })
+  expect(readFileSync(workerGitConfig(directory), 'utf8')).not.toContain('github.com')
 })
 
 it('reports each setup problem where the operator fixes it, and checks the agent CLI the way worker shells run it', async () => {

@@ -8,7 +8,8 @@ import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-
 import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
-import { testDeployment } from './fixtures/deployment.ts'
+import { resolveLocalDeployment } from '../src/deployment.ts'
+import { testDeployment, testMachine } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 // Git and shell subprocesses can exceed the 5s default timeout when the test suite runs in parallel.
@@ -37,6 +38,12 @@ describe('worker shims', () => {
     const bin = workerBin(dir)
     await expect(exec(join(bin, 'lark-cli'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
     await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
+  })
+  it('blocks GitHub and writes no GitHub credential helper for a local deployment', async () => {
+    await writeEnvironment(resolveLocalDeployment(testMachine({ stateDir: dir })), [])
+    const bin = workerBin(dir)
+    await expect(exec(join(bin, 'gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'gh is unavailable: this is a local-only deployment.\n' })
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).not.toContain('github.com')
   })
   it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
     const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
@@ -79,7 +86,7 @@ describe('agent git configuration', () => {
     const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: '/opt/agent tools/gh' } })
     await writeEnvironment(deployment, [])
     // Operator identity variables and git's fallback from the OS username must not apply to worker commits.
-    const env = workerEnv({ PATH: process.env.PATH, HOME: home, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.abbrev', GIT_CONFIG_VALUE_0: '12', GIT_AUTHOR_NAME: 'Operator', GIT_COMMITTER_EMAIL: 'operator@example.com', ...agentVariables(dir) })
+    const env = workerEnv({ PATH: process.env.PATH, HOME: home, LC_ALL: 'C', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.abbrev', GIT_CONFIG_VALUE_0: '12', GIT_AUTHOR_NAME: 'Operator', GIT_COMMITTER_EMAIL: 'operator@example.com', ...agentVariables(dir) })
     const git = async (...args: string[]): Promise<string> => (await exec('git', args, { cwd: dir, env })).stdout.trim()
     await git('init', '-q', 'repo')
     await exec('git', ['-C', 'repo', 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: dir, env })

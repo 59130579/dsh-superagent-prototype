@@ -46,11 +46,18 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
+/** A GitHub deployment is requested only when its source names a repository or an agent CLI. */
+export const usesGithubDeployment = (github: unknown): boolean => {
+  const accounts = GithubAccountsSchema.parse(github ?? {})
+  return Boolean(accounts.repository || accounts.cli)
+}
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
 export interface Deployment extends Machine {
+  /** `local` launches workers without configuring or using any GitHub identity. */
+  kind: 'github' | 'local'
   repository: string
   github: { cli: string; login: string; noreply: string }
   feishu?: FeishuBot
@@ -102,8 +109,12 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  return { ...machine, kind: 'github', repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
 }
+
+/** Creates a worker deployment that deliberately has no GitHub account, repository, credential helper, or remote. */
+export const resolveLocalDeployment = (machine: Machine): Deployment =>
+  ({ ...machine, kind: 'local', repository: '', github: { cli: '', login: '', noreply: '' } })
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })
 const BotInfo = z.object({ bot: z.object({ open_id: z.string().regex(/^ou_[A-Za-z0-9]+$/), app_name: z.string().default('') }) })

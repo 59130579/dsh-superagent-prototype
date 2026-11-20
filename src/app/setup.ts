@@ -1,7 +1,7 @@
 /** Probes repository and account CLIs, configures the worker execution environment and command shims, and tracks setup readiness. */
 import type { Context } from '@deepseek-ai/cordis'
 import { UserError } from '../core/index.ts'
-import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type Deployment, type Machine } from '../deployment.ts'
+import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, resolveLocalDeployment, usesGithubDeployment, workerProbe, type Deployment, type Machine } from '../deployment.ts'
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
@@ -18,7 +18,7 @@ const setupFields = (settings: Settings) =>
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
 /**
- * Resolves the target repository, GitHub account, and optional Feishu bot by probing CLIs, then writes and applies the isolated git and shim environment used by worker processes.
+ * Resolves either the optional GitHub lane or the local-worker lane plus an optional Feishu bot, then writes and applies the isolated git and shim environment used by worker processes.
  * `Runtime` runs it at startup to gate orchestration readiness, while `Settings` uses it to validate account changes, update blocked command shims, and schedule restarts.
  */
 export class Setup {
@@ -76,7 +76,9 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    const deployment = usesGithubDeployment(settings.sources.github?.config)
+      ? await resolveDeployment(machine, settings.sources.github?.config, probe)
+      : resolveLocalDeployment(machine)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
