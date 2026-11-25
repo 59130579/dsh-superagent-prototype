@@ -5,6 +5,7 @@ The host replies where the person who raised the question wrote, else to the ori
 An ordinary progress report without a request never authorizes attention.
 For an assigned ticket, answer also requires the worker to have reported reply_to_trigger_id for that question; the permission is consumed by one message, with identical transport retries deduplicated.
 Ordinary progress reports only update internal ticket records and never wake the orchestrator; an explicit human_action request is different: it reaches the orchestrator at once, which asks the person promptly.
+Key-progress exception: with the operator's switch enabled, the host posts public_summary from progress, blocked or failed Reports in the original Feishu Thread, coalescing and deduplicating per Ticket without waking the main Session. Never send a second copy.
 Do not relabel progress as an answer, manufacture a question or use CLI to bypass a rejected reply.
 Internal PR-binding progress reports must not trigger IM.
 Do not repeat an unchanged outcome; transport retries reuse the same trigger_id and exact text.

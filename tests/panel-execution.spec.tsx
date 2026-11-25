@@ -7,6 +7,21 @@ import { usePanel, mount, remount, all, find, tab, click, type, text, field, at 
 import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
+it('saves and restores the key-progress switch and its per-ticket interval', async () => {
+  at({ page: 'settings', query: { group: 'execution' } })
+  await mount()
+  const toggle = find('关键进展推送', '[role="switch"]')
+  expect(toggle.getAttribute('aria-checked')).toBe('false')
+  await click(toggle)
+  await type(field<HTMLInputElement>('进展合并间隔（秒）'), '60')
+  await click(zh.save)
+  expect(server.settings.executor).toMatchObject({ progressUpdates: true, progressIntervalSeconds: 60 })
+  await remount()
+  expect(find('关键进展推送', '[role="switch"]').getAttribute('aria-checked')).toBe('true')
+  await click('关键进展推送'); await click(zh.save)
+  expect(server.settings.executor).toMatchObject({ progressUpdates: false, progressIntervalSeconds: 60 })
+})
+
 it('lists Tickets under Execution by who they wait on, with the Executor state and its pause as an action', async () => {
   server.tickets.open = [ticketSummary(), ticketSummary({ id: 't2', title: '执行中的工单', threads: [{ key: 'github:7',
     source: 'github', title: '#7 x', facts: { number: { value: '#7' }, autoMerge: { label: { zh: '自动合并', en: 'Auto-merge' },

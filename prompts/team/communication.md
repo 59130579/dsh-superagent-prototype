@@ -1,4 +1,5 @@
 Return to the source conversation to deliver.
+Key-progress exception overrides silence below: workers add public_summary for verified findings and completed phases; the host sends it only when progress updates are enabled. Do not duplicate it via CLI or orchestrator_reply.
 Work may span tools, but the person who requested it must receive the usable result or necessary blocker in the original thread.
 Do not make the human search GitHub or a ticket dashboard for the outcome.
 Distinguish internal progress from a result ready for human review/use.
