@@ -10,8 +10,6 @@ It is also a way of working with an agent: **take as little human attention as p
 
 Feishu direct messages keep separate topics isolated: a new top-level request starts its own Thread, and replies stay with that topic. Worker answers are delivered to the reported question even when the router requests a result. Upgrades split previously merged direct-chat Threads without replaying old work; back up the database before upgrading, as [006 Deployment](docs/006-deployment.md) describes.
 
-Optional key-progress updates show task starts, actual queueing, verified findings and completed phases in each task's original Feishu topic. In **Settings → Execution**, turn **Key progress updates** on or off and set the per-ticket interval (45 seconds by default, 30–300 seconds). Changes apply immediately and persist across restarts. Turning updates off cancels unsent progress without affecting acknowledgements, necessary questions or final results; re-enabling never backfills cancelled milestones. Workers provide a separate short `public_summary` in `orchestrator_report`; internal reports stay internal. The host coalesces rapid updates, suppresses duplicates across restarts and reuses delivery receipts for retries.
-
 ## Setup
 
 Setup has many steps, so an agent does it with you. Ask your coding agent:

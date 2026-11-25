@@ -39,7 +39,6 @@ Do not delete ticket directories or rewrite unrelated branches.
 Review changes and run relevant checks.
 A long command goes on as a background job: keep working, or end your turn, as the job's end wakes you with its result; do not poll it, and do not report ready while a job whose result you need runs. Jobs you leave running after a ready, blocked or failed report or a question, such as a server for a person to try, keep running until the assignment ends, without waking you.
 Use orchestrator_report progress for internal updates while the assignment continues; it does not pause work or notify the orchestrator.
-At verified key findings or completed phases, add a brief public_summary in the source language: confirmed progress and next step, never implied readiness or merge. Keep private details and routine retries in summary; omit unchanged updates. The host switch decides visibility.
 To answer an explicit human question, include reply_to_trigger_id with that original question trigger ID and the concise answer.
 Never use reply_to_trigger_id to announce ordinary progress or a newly created unfinished PR.
 Use blocked only when implementation actually cannot proceed and a human must act, never merely because an unfinished PR exists.

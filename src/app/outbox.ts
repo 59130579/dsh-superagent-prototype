@@ -5,14 +5,12 @@ import { checkedImText } from '../infra/text.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.ts'
 import type { Store } from './store.ts'
-import type { Progress } from './progress.ts'
 
 export interface OutboxHost {
   readonly store: Pick<Store, 'atomic' | 'receipts'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
   readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
   readonly commands: Commands
-  readonly progress: Pick<Progress, 'clear' | 'delivery' | 'settled'>
   paused(): boolean
 }
 
@@ -28,12 +26,9 @@ export class Outbox implements OutboxPort {
   /** Record a message receipt and enqueue its delivery effect atomically; duplicate message IDs are ignored. */
   send(message: OutboundMessage): void {
     // Validate IM reply length here; acknowledgements are already validated when decided.
-    if ((message.kind === 'reply' || message.kind === 'progress') && message.channel.source === 'feishu') checkedImText(message.text)
+    if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
     const { store, effects } = this.host
-    store.atomic(() => {
-      if (message.kind === 'reply' && message.ticketId) this.host.progress.clear(message.ticketId)
-      if (store.receipts.add(message)) effects.enqueue('reply', message.id, {})
-    })
+    store.atomic(() => { if (store.receipts.add(message)) effects.enqueue('reply', message.id, {}) })
   }
   status(id: string): ReplyStatus | undefined { return this.host.store.receipts.get(id)?.status }
   withdraw(id: string): void {
@@ -45,25 +40,13 @@ export class Outbox implements OutboxPort {
     const { store, sources, commands } = this.host
     const receipt = store.receipts.get(id)
     if (receipt?.status !== 'pending') return
-    if (receipt.kind === 'progress') {
-      const decision = this.host.progress.delivery(receipt)
-      if (decision === 'cancel') { this.withdraw(id); return }
-      if (decision === 'wait') throw new Later('The next progress update waits for its per-ticket interval')
-    }
     if (!sources.instance(receipt.channel.source)?.enabled) throw new Later('The Source is off or not installed')
     // Hold later messages for the same ticket and conversation behind an earlier pending message until it exceeds the failure threshold.
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')
-    if (!sources.channelAllowed(receipt.channel)) {
-      store.receipts.settle(receipt, 'channelIgnored')
-      if (receipt.kind === 'progress') this.host.progress.settled(receipt, false)
-      return
-    }
+    if (!sources.channelAllowed(receipt.channel)) { store.receipts.settle(receipt, 'channelIgnored'); return }
     // A permanently unreachable target (such as a recalled message or deleted Issue) settles as `channelGone` so its receipt prevents retries.
     const result = await sources.send(receipt, commands)
     if (result === 'waiting') throw new Later('The Source is not installed')
-    store.atomic(() => {
-      store.receipts.settle(receipt, result === 'gone' ? 'channelGone' : 'sent')
-      if (receipt.kind === 'progress') this.host.progress.settled(receipt, result !== 'gone')
-    })
+    store.receipts.settle(receipt, result === 'gone' ? 'channelGone' : 'sent')
   }
 }

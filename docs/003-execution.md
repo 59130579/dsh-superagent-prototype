@@ -172,12 +172,6 @@ Its read position stays where it was, so a later notification or a poll of its T
 The Feishu event consumer reports every failure, and polling of subscribed topics keeps each failure on its Thread.
 
 A malformed item in a GitHub list or a Feishu page is skipped, and the Source's state counts it.
-### Optional key-progress updates
-
-The Executor settings `progressUpdates` switch defaults to false. With it enabled, the host sends first starts and actual queueing to a human-requested Ticket's original Feishu topic. A Worker can add `public_summary` to a `progress`, `blocked` or `failed` Report for a verified finding or completed phase. This summary is separate from internal engineering evidence, limited to 100 words and delivered by the host without waking the main Session. It cannot accompany a ready result, structured question or direct answer.
-
-`progressIntervalSeconds` defaults to 45 and accepts 30–300. Each Ticket has its own interval measured from its last successful delivery. Rapid summaries coalesce to the latest one; unchanged summaries are suppressed. Pending summaries and delivery state persist through restart. Turning the switch off cancels unsent summaries immediately; turning it on again starts with new milestones. A ready result, human stop, question or final reply supersedes pending progress. A transport request already in flight can finish after the switch changes. GitHub-origin Tickets keep their existing delivery route and do not publish these Feishu progress messages.
-
 ### Channel failure
 
 Outgoing messages are stored and sent as stored work, retried with backoff from 5 seconds, doubling up to 300.
