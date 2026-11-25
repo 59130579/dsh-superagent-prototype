@@ -245,6 +245,8 @@ A database migrated by a newer version cannot be opened by an older one. Rollbac
 
 The direct-topic isolation upgrade partitions earlier chat-wide Feishu Threads using retained root-message chains and native topic IDs. It keeps message and receipt IDs, rebuilds subscriptions from ticket origins and explicit attachment decisions, and removes unrelated undelivered broadcasts. It does not replay completed work or resend receipts. The migration is transactional and runs once; keep the pre-upgrade database with its matching plugin package for rollback.
 
+Existing direct chats also retain the upgrade time as a historical boundary: older messages not previously ingested stay as context when newly covered topics are polled. Messages already queued before the upgrade remain queued, and later messages are received normally.
+
 ### Agent presets
 
 The worker and router presets move shell commands to the background after 5 seconds. A Session cannot load without its preset. Keep the `dsh-superagent-worker` and `dsh-superagent-router` rows in `cordis.patch.yml` while their Sessions are in use; otherwise resume fails with `agent-preset/not-found`.

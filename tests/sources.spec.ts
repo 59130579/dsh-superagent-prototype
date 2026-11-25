@@ -197,6 +197,32 @@ describe('feishu source', () => {
     expect(inputs[1]).not.toContain(feishuTriggerId('om_a1'))
     h.store.close()
   })
+  it('keeps previously unseen pre-upgrade messages as history in both backfill and subscribed polling', async () => {
+    for (const polling of [false, true]) {
+      const h = host()
+      const floor = '2026-11-25T00:00:00.000Z'
+      h.store.set('feishu-topic-cutover:oc_dm', floor)
+      h.store.set(KV.feishu.chats, { oc_dm: true })
+      const source = directTopic('om_root', { thread_id: 'omt_dm' })
+      h.store.triggers.save(source)
+      h.store.set(KV.feishu.roots('oc_dm'), { omt_dm: 'om_root' })
+      subscribed(h, source.threads[0]!, { chatId: 'oc_dm', messageId: 'om_root', sourceTriggerId: source.id, threadId: 'omt_dm' })
+      h.store.set(KV.feishu.initialized('feishu:oc_dm:om_root'), true)
+      const messages = [-1, 1].map(delta => ({ message_id: delta < 0 ? 'om_old' : 'om_new', chat_id: 'oc_dm',
+        sender: { id: MEMBER, sender_type: 'user' }, create_time: String(Date.parse(floor) + delta), root_id: 'om_root',
+        msg_type: 'text', content: 'request', body: { content: '{"text":"request"}' } }))
+      vi.spyOn(h.commands, 'withSignal').mockReturnValue(h.commands)
+      vi.spyOn(h.commands, 'lark').mockImplementation(async args => {
+        if (args[2] === '/open-apis/im/v1/messages/mget') return { items: [{ message_id: 'om_root', chat_id: 'oc_dm', thread_id: 'omt_dm' }] }
+        return polling ? { messages, thread_id: 'omt_dm', has_more: false } : { items: messages, has_more: false }
+      })
+      if (polling) await pollFeishuThreads(h)
+      else await backfillChat(h, 'oc_dm', true, '2026-11-24T00:00:00.000Z', '2026-11-26T00:00:00.000Z', new AbortController().signal)
+      expect(h.receive.mock.calls.map(([trigger]) => trigger.meta.messageId)).toEqual(['om_new'])
+      expect(h.store.triggers.get(feishuTriggerId('om_old'))).toBeUndefined()
+      h.store.close()
+    }
+  })
   it('polls subscribed threads and stores unseen replies as triggers on that thread', async () => {
     const h = host()
     const source = feishuTrigger({ message_id: 'om_root', chat_id: 'oc_1', chat_type: 'group', sender_id: MEMBER, sender_type: 'user', content: '@bot fix', create_time: '1', mentions: [{ id: 'ou_bot' }] }, 'ou_bot', 'cli_bot')!

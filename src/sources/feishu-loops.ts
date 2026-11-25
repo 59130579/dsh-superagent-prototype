@@ -26,6 +26,8 @@ const bot = (ctx: SourceContext): FeishuBot => {
 }
 async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
   trigger = await normalizeFeishuTopic(ctx, trigger)
+  const cutover = ctx.state.get(KV.feishu.cutover(String(trigger.meta.chatId)))
+  if (cutover && trigger.at <= cutover && !ctx.triggers.get(trigger.id)) return
   await ctx.receive(trigger)
   const chatId = String(trigger.meta.chatId ?? '')
   if (!chatId) return

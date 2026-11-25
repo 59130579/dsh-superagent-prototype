@@ -6,12 +6,19 @@ import type { Store } from './store.ts'
 
 /** 根据根消息链及原生 thread_id 重建私聊线程、明确来源的订阅和索引。 */
 export function migrateFeishuTopics(store: Store): void {
-  if (store.get(KV.feishu.isolated)) return
+  if (store.get(KV.feishu.isolated) && store.get(KV.feishu.cutoverReady)) return
   const allTriggers = store.db.prepare('SELECT value FROM trigger').all().map(row => JSON.parse(String(row.value)) as Trigger)
   const decisions = store.db.prepare('SELECT value FROM decision').all().map(row => JSON.parse(String(row.value)) as Decision)
   const triggers = allTriggers.filter(trigger => trigger.source === 'feishu' && trigger.meta.direct === true
     && typeof trigger.meta.chatId === 'string' && typeof trigger.meta.messageId === 'string')
   const chats = new Set(triggers.map(trigger => String(trigger.meta.chatId)))
+  // 新增轮询覆盖不能把升级前漏收的旧话题消息变成新请求。
+  if (!store.get(KV.feishu.cutoverReady)) {
+    const cutover = new Date().toISOString()
+    for (const chat of chats) store.set(KV.feishu.cutover(chat), cutover)
+    store.set(KV.feishu.cutoverReady, true)
+  }
+  if (store.get(KV.feishu.isolated)) return
   for (const chat of chats) {
     const messages = triggers.filter(trigger => trigger.meta.chatId === chat)
     const byMessage = new Map(messages.map(trigger => [String(trigger.meta.messageId), trigger]))
