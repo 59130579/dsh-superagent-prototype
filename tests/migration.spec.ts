@@ -8,6 +8,7 @@ import { KV } from '../src/kv.ts'
 import { basisOf, reasonsOf, withoutCopies } from '../src/app/migration.ts'
 import { Prompts, composePrompt, defaultPrompts } from '../src/app/prompts.ts'
 import { masterPrompt } from '../src/app/context.ts'
+import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
 
 let directory: string
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'orchestrator-migration-')) })
@@ -36,6 +37,67 @@ function schema10(path: string, records: Record<string, unknown>, rows: { ticket
 }
 const actor = { source: 'feishu', id: 'ou_alice' }
 const mandate = (basis: object) => ({ strength: 'explicit', policyVersion: 'v1', basis, actor, scope: 'small' })
+
+it('splits legacy merged direct topics without replaying old work or receipts', () => {
+  const path = join(directory, 'db.sqlite')
+  const before = new Store(path)
+  const trigger = (id: string, root?: string, native?: string): Trigger => ({ id, source: 'feishu', actor, human: true,
+    threads: [{ source: 'feishu', id: 'oc_dm' }], at: '2026-11-20T00:00:00.000Z', text: id,
+    channel: { source: 'feishu', thread: 'feishu:oc_dm', address: { chatId: 'oc_dm', messageId: id, direct: 'true' } },
+    meta: { chatId: 'oc_dm', messageId: id, direct: true, ...root ? { rootId: root } : {}, ...native ? { threadId: native } : {} } })
+  for (const value of [trigger('om_a'), trigger('om_b'), trigger('om_a1', 'om_a', 'omt_a'), trigger('om_a2', 'om_a1', 'omt_a'),
+    trigger('om_b1', 'om_b', 'omt_b')]) before.triggers.save(value)
+  for (const [id, origin] of [['ta', 'om_a'], ['tb', 'om_b']]) {
+    const ticket: Ticket = { id: id!, title: id!, decisionId: 'decision', mandate: mandate({ via: 'listed' }) as Ticket['mandate'],
+      channels: [], assignments: [], inputs: [], undelivered: [], createdAt: '', updatedAt: '', origin: { triggerId: origin!, triggerIds: [origin!] } }
+    before.tickets.save(ticket)
+  }
+  const merged: Thread = { key: 'feishu:oc_dm', ref: { source: 'feishu', id: 'oc_dm' }, createdAt: '',
+    subscriptions: ['ta', 'tb'], correlated: [], pending: ['om_a2'], meta: { threadId: 'omt_b' } }
+  before.threads.save(merged)
+  // 旧广播曾把 B 的追问送进 A：历史输入保留，但不得继续投递或授权答复。
+  const ta = before.tickets.get('ta')!
+  ta.inputs = [{ id: 'foreign', kind: 'trigger', triggerId: 'om_b1', at: '', readAt: null },
+    { id: 'own', kind: 'trigger', triggerId: 'om_a1', at: '', readAt: null }]
+  ta.undelivered = ['foreign', 'own']; ta.answers = ['om_b1', 'om_a1']
+  ta.follows = [{ thread: merged.key, own: false }]
+  before.tickets.save(ta)
+  before.receipts.add({ id: 'sent-before', channel: before.triggers.get('om_a')!.channel!, text: 'old', kind: 'reply', ticketId: 'ta' })
+  before.delete('feishu-topic-isolation-v1')
+  before.close()
+  const after = new Store(path)
+  expect(after.triggers.get('om_a2')!.threads).toEqual([{ source: 'feishu', id: 'oc_dm:om_a' }])
+  expect(after.threads.get('feishu:oc_dm:om_a')!.subscriptions).toEqual(['ta'])
+  expect(after.threads.get('feishu:oc_dm:om_b')!.subscriptions).toEqual(['tb'])
+  expect(after.threads.get('feishu:oc_dm:om_a')!.pending).toEqual(['om_a2'])
+  expect(after.threads.get('feishu:oc_dm')).toBeUndefined()
+  expect(after.tickets.get('ta')).toMatchObject({ undelivered: ['own'], answers: ['om_a1'],
+    follows: [{ thread: 'feishu:oc_dm:om_a', own: false }] })
+  expect(after.tickets.get('ta')!.inputs).toHaveLength(2)
+  expect(after.replyStatus('sent-before')).toBe('pending')
+  expect(after.get('feishu-topic-roots:oc_dm')).toEqual({ omt_a: 'om_a', omt_b: 'om_b' })
+  after.close()
+  const reopened = new Store(path)
+  expect(reopened.threads.get('feishu:oc_dm:om_a')!.subscriptions).toEqual(['ta'])
+  expect(reopened.replyStatus('sent-before')).toBe('pending')
+  reopened.close()
+})
+
+it('rolls back topic migration atomically when a retained root chain is cyclic', () => {
+  const path = join(directory, 'cycle.sqlite')
+  const before = new Store(path)
+  for (const [id, root] of [['om_a', 'om_b'], ['om_b', 'om_a']]) before.triggers.save({ id: id!, source: 'feishu', actor, human: true,
+    threads: [{ source: 'feishu', id: 'oc_dm' }], at: '2026-11-20T00:00:00.000Z', text: '',
+    meta: { chatId: 'oc_dm', messageId: id, rootId: root, direct: true } })
+  before.delete(KV.feishu.isolated)
+  before.close()
+  expect(() => new Store(path)).toThrow(/cycle/)
+  const db = new DatabaseSync(path)
+  expect(db.prepare("SELECT value FROM kv WHERE key='feishu-topic-isolation-v1'").get()).toBeUndefined()
+  expect(JSON.parse(String(db.prepare("SELECT value FROM trigger WHERE id='om_a'").get()!.value)).threads)
+    .toEqual([{ source: 'feishu', id: 'oc_dm' }])
+  db.close()
+})
 
 it('refuses a database older than schema 10 and asks for a new state directory', () => {
   const path = join(directory, 'db.sqlite')

@@ -5,6 +5,7 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
 import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
 import { runFeishu } from '../src/sources/feishu-loops.ts'
+import { normalizeFeishuTopic } from '../src/sources/feishu-topics.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
@@ -122,13 +123,79 @@ describe('feishu source', () => {
     expect(feishuTrigger({ message_id: 'om_3', chat_id: 'oc_1', chat_type: 'p2p', sender_id: 'ou_bot', sender_type: 'bot', content: 'me', create_time: '1' }, 'ou_bot', 'cli_bot')).toBeUndefined()
     expect(feishuTrigger(historyEvent({ message_id: 'om_4', chat_id: 'oc_1', create_time: '2', sender: { id: 'ou_x', sender_type: 'app' }, body: { content: '{"text":"from app"}' } }, 'oc_1', false), 'ou_bot', 'cli_bot')).toMatchObject({ human: false, text: 'from app', threads: [{ id: 'oc_1:om_4' }] })
   })
-  it('keeps a single entry thread for every direct message in one chat', () => {
+  it('isolates separate direct-message requests and keeps replies on their source topic', () => {
     const first = feishuTrigger({ message_id: 'om_first', chat_id: 'oc_dm', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user',
       content: 'first task', create_time: '1' }, 'ou_bot', 'cli_bot')!
     const second = feishuTrigger({ message_id: 'om_second', chat_id: 'oc_dm', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user',
       content: 'next task', create_time: '2' }, 'ou_bot', 'cli_bot')!
-    expect(first.threads).toEqual([{ source: 'feishu', id: 'oc_dm' }])
-    expect(second.threads).toEqual(first.threads)
+    expect(first.threads).toEqual([{ source: 'feishu', id: 'oc_dm:om_first' }])
+    expect(second.threads).toEqual([{ source: 'feishu', id: 'oc_dm:om_second' }])
+    const reply = feishuTrigger({ message_id: 'om_reply', chat_id: 'oc_dm', chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user',
+      content: 'follow up A', create_time: '3', root_id: 'om_first', thread_id: 'omt_first' }, 'ou_bot', 'cli_bot')!
+    expect(reply.threads).toEqual(first.threads)
+  })
+  const directTopic = (id: string, extra: Record<string, string | undefined> = {}) => feishuTrigger({ message_id: id, chat_id: 'oc_dm',
+    chat_type: 'p2p', sender_id: MEMBER, sender_type: 'user', content: id, create_time: '1', ...extra }, 'ou_bot', 'cli_bot')!
+  it('uses the native topic mapping when a reply has no root or references the bot', async () => {
+    const h = host()
+    h.store.set(KV.feishu.roots('oc_dm'), { omt_a: 'om_a' })
+    const api = vi.spyOn(h.commands, 'lark')
+    for (const extra of [{ thread_id: 'omt_a' }, { thread_id: 'omt_a', root_id: 'om_bot' }]) {
+      expect((await normalizeFeishuTopic(h, directTopic('om_reply', extra))).threads).toEqual([{ source: 'feishu', id: 'oc_dm:om_a' }])
+    }
+    expect(api).not.toHaveBeenCalled()
+    h.store.close()
+  })
+  it('retains a known message topic when history later omits its root and adds the native topic', async () => {
+    const h = host()
+    h.store.triggers.save(directTopic('om_a'))
+    h.store.triggers.save(await normalizeFeishuTopic(h, directTopic('om_reply', { root_id: 'om_a' })))
+    expect((await normalizeFeishuTopic(h, directTopic('om_reply', { thread_id: 'omt_a' }))).threads)
+      .toEqual([{ source: 'feishu', id: 'oc_dm:om_a' }])
+    expect(h.store.get(KV.feishu.roots('oc_dm'))).toEqual({ omt_a: 'om_a' })
+    h.store.close()
+  })
+  it('resolves nested replies through a bot message and caches their canonical root', async () => {
+    const h = host()
+    h.store.triggers.save(directTopic('om_a'))
+    h.store.triggers.save(directTopic('om_nested', { root_id: 'om_a' }))
+    const api = vi.spyOn(h.commands, 'lark').mockResolvedValue({ items: [{ message_id: 'om_bot', chat_id: 'oc_dm', root_id: 'om_nested' }] })
+    const normalized = await normalizeFeishuTopic(h, directTopic('om_reply', { root_id: 'om_bot', thread_id: 'omt_a' }))
+    expect(normalized.threads).toEqual([{ source: 'feishu', id: 'oc_dm:om_a' }])
+    expect(api).toHaveBeenCalledTimes(1)
+    expect((await normalizeFeishuTopic(h, directTopic('om_next', { thread_id: 'omt_a' }))).threads).toEqual(normalized.threads)
+    expect(api).toHaveBeenCalledTimes(1)
+    h.store.close()
+  })
+  it('refuses missing, deleted, cross-chat, and cyclic roots without caching them', async () => {
+    for (const items of [[], [{ message_id: 'om_bot', chat_id: 'oc_other' }],
+      [{ message_id: 'om_bot', chat_id: 'oc_dm', deleted: true }],
+      [{ message_id: 'om_bot', chat_id: 'oc_dm', root_id: 'om_reply' }]]) {
+      const h = host()
+      vi.spyOn(h.commands, 'lark').mockResolvedValue({ items })
+      await expect(normalizeFeishuTopic(h, directTopic('om_reply', { root_id: 'om_bot', thread_id: 'omt_a' }))).rejects.toThrow()
+      expect(h.store.get(KV.feishu.roots('oc_dm'))).toBeUndefined()
+      h.store.close()
+    }
+  })
+  it('routes interleaved direct topics only to their own tickets through the Engine', async () => {
+    const h = host()
+    const ids: string[] = []
+    for (const id of ['om_a', 'om_b']) {
+      const source = await normalizeFeishuTopic(h, directTopic(id))
+      await h.receive(source)
+      ids.push(h.engine.decide(source.id, { kind: 'accept', title: id, scope: 'small', reason: 'requested', acknowledgement: 'ok',
+        evalId: h.store.threads.get(`feishu:oc_dm:${id}`)!.evaluating!.id }).ticketId!)
+    }
+    for (const [id, root, native] of [['om_a1', 'om_a', 'omt_a'], ['om_b1', 'om_b', 'omt_b'], ['om_a2', 'om_a', 'omt_a']]) {
+      await h.receive(await normalizeFeishuTopic(h, directTopic(id!, { root_id: root!, thread_id: native! })))
+    }
+    const inputs = ids.map(id => h.store.tickets.get(id)!.inputs.flatMap(input => input.kind === 'trigger' ? [input.triggerId] : []))
+    expect(inputs[0]).toContain(feishuTriggerId('om_a2'))
+    expect(inputs[0]).not.toContain(feishuTriggerId('om_b1'))
+    expect(inputs[1]).toContain(feishuTriggerId('om_b1'))
+    expect(inputs[1]).not.toContain(feishuTriggerId('om_a1'))
+    h.store.close()
   })
   it('polls subscribed threads and stores unseen replies as triggers on that thread', async () => {
     const h = host()
@@ -164,7 +231,7 @@ describe('feishu source', () => {
       content: 'fix it', create_time: '1757376000000' }, 'ou_bot', 'cli_bot')!
     h.store.triggers.save(source)
     subscribed(h, source.threads[0]!)
-    h.store.threads.save({ ...h.store.threads.get('feishu:oc_dm')!, createdAt: '2025-09-01T00:00:00Z',
+    h.store.threads.save({ ...h.store.threads.get('feishu:oc_dm:om_root')!, createdAt: '2025-09-01T00:00:00Z',
       lastAt: new Date().toISOString() })
     const page = (message_id: string, sender: Record<string, string>, extra: Record<string, unknown> = {}) => ({ message_id,
       chat_id: 'oc_dm', msg_type: 'text', content: 'and the header', sender,
@@ -181,7 +248,7 @@ describe('feishu source', () => {
       content: 'and the header',
       create_time: String(Date.parse('2026-09-11 12:00')), root_id: 'om_root', thread_id: 'omt_dm' }, 'ou_bot', 'cli_bot')
     expect(h.receive.mock.calls.map(([trigger]) => trigger)).toEqual([live])
-    expect(live).toMatchObject({ addressed: 'direct', threads: [{ source: 'feishu', id: 'oc_dm' }] })
+    expect(live).toMatchObject({ addressed: 'direct', threads: [{ source: 'feishu', id: 'oc_dm:om_root' }] })
     h.store.close()
   })
   it('reads message times given as epoch milliseconds or as local times, and refuses others', () => {

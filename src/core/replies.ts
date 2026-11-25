@@ -71,6 +71,13 @@ export class Replies extends EnginePart {
       const reported = !!ticket && liveTicket(ticket) && latestAssignment(ticket)?.report?.state === 'ready'
       const ready = outcome === 'merged' || outcome === 'completed' || outcome === 'dropped' || reported
       if (!ticket || !ready) throw new UserError('notReady')
+      const answered = latestAssignment(ticket)?.report?.answers
+      if (answered && request.triggerId && request.triggerId !== answered) throw new UserError('notAnswerable')
+      const target = answered ?? request.triggerId
+      // 报告回答追问时，以报告来源为准；显式追问不能被 result 静默忽略。
+      if (target && (answered || target !== ticket.origin.triggerId)) {
+        return this.answer({ ...request, ticketId: ticket.id, purpose: 'answer', triggerId: target })
+      }
     }
     const attention = request.purpose === 'attention' ? ticket?.attention : undefined
     // Attention replies must match the ticket's currently open question text.

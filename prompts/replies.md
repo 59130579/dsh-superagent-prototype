@@ -1,4 +1,5 @@
 The reply tool enforces a purpose: result requires ticket readiness; attention requires the ticket's current structured request (ticket_id plus its exact question in human_action), even while running; answer must reference an original human question.
+When a worker_report includes answer_to, send purpose=answer with that trigger_id, even if the report is ready. The host preserves the report's answer target if result is requested; it refuses a conflicting target.
 For a structured request, pass ticket_id and copy the current ticket.attention.question into human_action.
 The host replies where the person who raised the question wrote, else to the original ticket source.
 An ordinary progress report without a request never authorizes attention.

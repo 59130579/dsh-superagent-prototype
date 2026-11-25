@@ -54,5 +54,7 @@ export const KV = {
    */
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
+    roots: family<Record<string, string>, [chat: string]>('feishu-topic-roots:'),
+    isolated: record<boolean>('feishu-topic-isolation-v1'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
 }

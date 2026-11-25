@@ -72,6 +72,14 @@ function accepted(h: ReturnType<typeof harness>, id = '1', thread = 't1') {
 }
 
 describe('intake', () => {
+  it('keeps a direct-message follow-up out of another topic ticket', () => {
+    const h = harness()
+    const first = accepted(h, '1', 'oc_dm:om_a').ticketId!
+    const second = accepted(h, '2', 'oc_dm:om_b').ticketId!
+    h.engine.receive(trigger('3', { threads: [{ source: 'chat', id: 'oc_dm:om_a' }] })); h.settle()
+    expect(h.repo.tickets.get(first)!.inputs.some(input => input.kind === 'trigger' && input.triggerId === '3')).toBe(true)
+    expect(h.repo.tickets.get(second)!.inputs.some(input => input.kind === 'trigger' && input.triggerId === '3')).toBe(false)
+  })
   it('stores a trigger once and records source filtering', () => {
     const h = harness()
     expect(h.engine.receive(trigger('1'))).toBe('stored')
@@ -1296,6 +1304,28 @@ describe('gaps', () => {
     const stopped = accepted(h, '6', 't6').ticketId!
     h.engine.stopTicket(stopped)
     expect(() => h.engine.reply({ purpose: 'result', ticketId: stopped, text: 'x' })).toThrow(new UserError('notReady'))
+  })
+  it('routes a ready report answering a follow-up to that question even when the main Session requests a result', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.receive(trigger('2', { channel: { source: 'chat', thread: 'topic-a', address: { message: 'question' } } })); h.settle()
+    h.engine.report(ticketId, { state: 'ready', summary: 'Follow-up done', answers: '2' })
+    h.engine.reply({ purpose: 'result', ticketId, text: 'Follow-up done' })
+    expect(h.outbox.at(-1)!.channel.address).toEqual({ message: 'question' })
+    expect(h.repo.tickets.get(ticketId)!.answers).toEqual([])
+    expect(h.engine.reply({ purpose: 'result', ticketId, text: 'Follow-up done' }).reused).toBe(true)
+  })
+  it('refuses a result that targets a question different from the latest worker answer', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.receive(trigger('2')); h.engine.receive(trigger('3')); h.settle()
+    h.engine.report(ticketId, { state: 'progress', summary: 'Old answer', answers: '2' })
+    h.engine.report(ticketId, { state: 'ready', summary: 'Current answer', answers: '3' })
+    const count = h.outbox.length
+    expect(() => h.engine.reply({ purpose: 'result', ticketId, triggerId: '2', text: 'Current answer' })).toThrow()
+    expect(h.outbox).toHaveLength(count)
+    h.engine.reply({ purpose: 'result', ticketId, triggerId: '3', text: 'Current answer' })
+    expect(h.outbox.at(-1)!.channel.address).toEqual({ message: '3' })
   })
   it('keeps an Eval\'s deadline on a repeated delivery, refuses to queue a held Trigger again, and puts expired Triggers first', () => {
     const h = harness()

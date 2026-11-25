@@ -14,6 +14,7 @@ import { health, type SourceContext } from './host.ts'
 import { KV } from '../kv.ts'
 import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
 import type { FeishuConfig } from './feishu.ts'
+import { normalizeFeishuTopic } from './feishu-topics.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
@@ -24,6 +25,7 @@ const bot = (ctx: SourceContext): FeishuBot => {
   return resolved
 }
 async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
+  trigger = await normalizeFeishuTopic(ctx, trigger)
   await ctx.receive(trigger)
   const chatId = String(trigger.meta.chatId ?? '')
   if (!chatId) return
@@ -241,8 +243,7 @@ async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSign
   }
   const direct = ctx.state.get(KV.feishu.chats)?.[ref.chatId] === true
   const since = Date.parse(thread.createdAt)
-  // Direct chats share one entry Thread, so their ID carries no source-message suffix; preserve the retained source message as the topic root.
-  const root = direct ? ref.messageId : thread.ref.id.slice(thread.ref.id.indexOf(':') + 1)
+  const root = thread.ref.id.slice(thread.ref.id.indexOf(':') + 1)
   let resource: string | null = `feishu/${ref.triggerId}/thread`
   while (resource) {
     if (signal?.aborted) return
@@ -252,6 +253,7 @@ async function pollThread(ctx: SourceContext, thread: Thread, signal?: AbortSign
     if ('thread_id' in result && result.thread_id && thread.meta.threadId !== result.thread_id) {
       ctx.threads.patch(thread.key, { threadId: result.thread_id })
     }
+    if (direct && result.thread_id) ctx.state.set(KV.feishu.roots(ref.chatId), { ...ctx.state.get(KV.feishu.roots(ref.chatId)), [result.thread_id]: root })
     const encounteredKnown = result.messages.some(message => known.has(message.message_id))
     const { botId, appId } = bot(ctx)
     for (const message of result.messages.filter(item => !known.has(item.message_id) && !item.deleted).reverse()) {

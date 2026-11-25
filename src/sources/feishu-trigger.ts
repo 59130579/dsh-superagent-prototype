@@ -13,9 +13,9 @@ const EventSchema = z.object({ message_id: z.string(), chat_id: z.string(), chat
   mentions: z.array(z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() })).default([]),
   root_id: z.string().optional(), parent_id: z.string().optional(), thread_id: z.string().optional(), message_app_link: z.url().optional() })
 export type FeishuEvent = z.infer<typeof EventSchema>
-/** Keeps one persistent entry conversation for each direct chat; groups remain partitioned by their root message. */
+/** 私聊和群聊都按根消息隔离；同一话题的追问复用根消息。 */
 export const feishuThreadId = (chatId: string, direct: boolean, rootId: string | undefined, messageId: string): string =>
-  direct ? chatId : `${chatId}:${rootId ?? messageId}`
+  `${chatId}:${rootId ?? messageId}`
 /** Deterministic trigger ID for a Feishu message; every read path for this message produces the same ID. */
 export const feishuTriggerId = (messageId: string): string => key('feishu', messageId)
 export const withMentionNames = (text: string, mentions: { key?: string | undefined; name?: string | undefined }[]): string =>
