@@ -3,7 +3,6 @@
  * Readers and writers refer to a record by its entry here so each key is spelled once with its value type.
  */
 import type { PromptVersion } from './app/prompts.ts'
-import type { ProgressState } from './app/progress.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
@@ -32,8 +31,6 @@ export const KV = {
     builtIn: family<string, [base: string]>('prompt-built-in:') },
   /** Runtime: the main Session's ID. */
   runtime: { masterId: record<string>('master-id') },
-  /** 关键进展：每个工单的待发送摘要、最近发送时间及去重状态。 */
-  progress: { ticket: family<ProgressState, [ticket: string]>('ticket-progress:') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
