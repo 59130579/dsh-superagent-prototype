@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { TICKET_FILTERS, type TicketFilter } from '../app/api.ts'
 import { LIMITS } from '../limits.ts'
 import { usePoll, type SettingsView, type SourceView, type StateView } from './api.ts'
-import { DisclosureRow, Icon, InfoTip, Input, Pill } from './controls.tsx'
+import { DisclosureRow, Icon, InfoTip, Input, Pill, Switch } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
@@ -77,9 +77,11 @@ export function ExecutionSettings() {
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), progressIntervalSeconds: String(executor.progressIntervalSeconds),
+    blockedCommands: executor.blockedCommands.join(' ') }
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), progressIntervalSeconds: numberOf(value.progressIntervalSeconds),
+      blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   const prepare = useRef<HTMLTextAreaElement>(null)
@@ -99,6 +101,13 @@ export function ExecutionSettings() {
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
+          </Field>
+          <Field label={t('progressUpdates')} hint={t('progressUpdatesHint')}>
+            <Switch checked={value.progressUpdates} label={t('progressUpdates')} onChange={progressUpdates => edit({ progressUpdates })} />
+          </Field>
+          <Field label={t('progressIntervalSeconds')} hint={t('progressIntervalSecondsHint')}>
+            <Input type="number" min={LIMITS.progressIntervalSeconds.min} max={LIMITS.progressIntervalSeconds.max} required
+              value={value.progressIntervalSeconds} onChange={event => edit({ progressIntervalSeconds: event.target.value })} />
           </Field>
         </div>
         <div className="dt-form dt-block">
